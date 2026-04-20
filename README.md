@@ -1,4 +1,4 @@
-# 🚀 Entrix API
+# Entrix API
 
 Backend do projeto **Entrix**, 
 um aplicativo de controle financeiro desenvolvido 
