@@ -1,56 +1,47 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
-from app import models, schemas
-from app.auth import create_token
+
+from app.core.security import (
+    create_access_token,
+    get_current_user,
+    hash_password,
+    is_hashed,
+    verify_password,
+)
+from app.database import get_db
+from app.models import User
+from app.schemas import Credentials, Token, UserOut
 
 router = APIRouter()
 
-# 🔌 DB
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
-# 🧾 REGISTER
-@router.post("/register")
-def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    existing_user = db.query(models.User).filter(
-        models.User.email == user.email
-    ).first()
+@router.post("/register", status_code=status.HTTP_201_CREATED, response_model=UserOut)
+def register(body: Credentials, db: Session = Depends(get_db)) -> User:
+    exists = db.scalar(select(User.id).where(User.email == body.email))
+    if exists:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Já existe uma conta com este email")
 
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Usuário já existe")
-
-    new_user = models.User(
-        email=user.email,
-        password=user.password  # depois a gente melhora com hash
-    )
-
-    db.add(new_user)
+    user = User(email=body.email, password=hash_password(body.password))
+    db.add(user)
     db.commit()
-    db.refresh(new_user)
+    db.refresh(user)
+    return user
 
-    return {"msg": "usuário criado com sucesso"}
 
-# 🔐 LOGIN
-@router.post("/login")
-def login(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(
-        models.User.email == user.email
-    ).first()
+@router.post("/login", response_model=Token)
+def login(body: Credentials, db: Session = Depends(get_db)) -> Token:
+    user = db.scalar(select(User).where(User.email == body.email))
+    if user is None or not verify_password(body.password, user.password):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Email ou senha inválidos")
 
-    if not db_user or db_user.password != user.password:
-        raise HTTPException(
-            status_code=401,
-            detail="credenciais inválidas"
-        )
+    if not is_hashed(user.password):
+        user.password = hash_password(body.password)
+        db.commit()
 
-    token = create_token({"sub": db_user.email})
+    return Token(access_token=create_access_token(user))
 
-    return {
-        "access_token": token,
-        "token_type": "bearer"
-    }
+
+@router.get("/me", response_model=UserOut)
+def me(user: User = Depends(get_current_user)) -> User:
+    return user
